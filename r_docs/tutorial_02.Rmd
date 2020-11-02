@@ -1,0 +1,203 @@
+---
+title: "Generalized Additive Models (GAM) - Tutorial"
+output: html_notebook
+author: "Rodrigo Dal Ben"
+---
+
+Notes from this [tutorial](https://m-clark.github.io/generalized-additive-models/)
+
+# Generalized Additive Models (GAM)
+
+This analysis require the `mgcv` package. 
+
+Summary of the tutorial: 
+
+* GAMs are useful when trying to model a non-linear relation (usually complex one);
+
+* It is an extension/generalization of the linear model;
+
+* it is flexible and powerful when dealing with complex non-linear data (as pupil curves);
+
+* GAM formulation: $y\sim \mathcal{N}(\mu, \sigma^{2})$ -> $g(\mu) = f(X)$
+
+* (when talking about non-linear data that is transformed over and over to fit a linear monel) "One should be prepared to use models better suited to the situation, rather than torturing the data to fit a simplified modeling scheme.";
+
+* GAMs are penalized GLM that avoids overfitting;
+
+## One predictor
+
+There are several packages to run GAMs, but this one selects the smooths automatically.
+
+```{r}
+install.packages("mgcv")
+
+library(mgcv)
+library(here)
+library(tidyverse)
+```
+
+Loading the data
+
+```{r}
+pisa = read_csv(here("data/pisasci2006.csv"))
+head(pisa)
+```
+
+We can run a linear regression using the `gam` function:
+
+```{r}
+mod_lm = gam(Overall ~ Income, data = pisa)
+
+coef(mod_lm) # coeficients
+summary(mod_lm)
+
+```
+
+Let's plot the models:
+```{r}
+install.packages("visreg")
+
+library(visreg)
+
+visreg::visreg(mod_gam1)
+visreg::visreg(mod_lm)
+```
+
+In the model, moving one unit in the income means that you go from being the poorest to the richest country in the world. You cank break it into pieces, like, walking about 0.8 in the income variable will increase the overall interest in science in about 35 points.
+
+Some new output:
+
+* *Deviance explained*: equivalent to the unadjusted R-squared (generalization of the R squared);
+
+* *Scale estimate*: the scaled deviance, quivalent to the residual sums of squares.
+
+* *GCV*: `generalized cross validation` score is a kind of an estimate of the *mean square prediction error*. It is measured by a `leave-one-out` cross validation estimation. "On its own it doesn’t tell us much, but we can use it similar to AIC as a comparative measure to choose among different models, with lower being better."
+
+To fit a GAM model we will add a "function `s` within the formula to denote the smooth terms. Within that function we also specify the type of smooth, though a default is available."
+
+```{r}
+mod_gam1 = gam(Overall ~ s(Income, bs = "cr"), data = pisa)
+
+summary(mod_gam1)
+
+```
+
+"The smooth component of our model regarding a country’s income and its relationship with overall science score suggests it is statistically significant, but there are a couple of things in the model summary that would be unfamiliar. We’ll start with the effective degrees of freedom, or `edf`. In typical OLS regression the model degrees of freedom is equivalent to the number of predictors/terms in the model. This is not so straightforward with a GAM due to the smoothing process and the penalized regression estimation procedure, something that will be discussed more later. In this situation, we are still trying to minimize the residual sums of squares, but we also have a built-in penalty for *‘wiggliness’* of the fit, where in general we try to strike a balance between an undersmoothed fit and an oversmoothed fit. The default p-value for the test is based on the effective degrees of freedom and the rank $r$ of the covariance matrix for the coefficients for a particular smooth, so here, conceptually, it is the p-value associated with the $F(r, n-edf)$. However, there are still other issues to be concerned about, and ?summary.gam will provide your first step down that particular rabbit hole. For hypothesis testing an alternate edf is actually used, which is the other one provided there in the summary result. At this point you might be thinking these p-values are a bit fuzzy, and you’d be right. The gist is, they aren’t to be used for harsh cutoffs, say, at an arbitrary .05 level, but if they are pretty low you can feel comfortable claiming statistical significance, which of course is the end all, be all, of the scientific endeavor- right?"  (cool!)
+
+To visualize the model, one can use the `mgcv` or the `visreg` packages. 
+
+**Model comparisons** can be performed using the `AIC` comparisons:
+
+```{r}
+aic_lm = AIC(mod_lm)
+gcv_lm = summary(mod_lm)$sp.criterion
+rsq_lm = summary(mod_lm)$r.sq
+
+aic_gam1 = AIC(mod_gam1)
+gcv_gam1 = summary(mod_gam1)$sp.criterion
+rsq_gam1 = summary(mod_gam1)$r.sq
+
+(mod_comp = tibble(" " = c("LM", "GAM"), 
+                  "AIC" = c(aic_lm, aic_gam1),
+                  "GCV" = c(gcv_lm, gcv_gam1),
+                  "R2" = c(rsq_lm, rsq_gam1)
+                  ))
+```
+
+The comparison shows that GAM fits better than the Linear Model. Another way to compare the models would be to use the p-values (in the `anova` function), but this is difficult to interpret once the `edf` (expected dfs) do not vary linearly in relation to the terms of the model. So, it is difficult to interpret it. Stick with AICs, GCV and $R^2$.
+
+
+## Multiple predictors
+
+Again, let's built a linear model and a GAM with multiple predictors and compare them at the end.
+
+Linear model:
+
+```{r}
+mod_lm2 = gam(Overall ~ Income + Edu + Health, data = pisa)
+
+summary(mod_lm2)
+```
+
+Non-linear models: 
+(using the default type of smooth `tp` or thin plate regression spline)
+
+```{r}
+mod_gam2 = gam(Overall ~ s(Income) + s(Edu) + s(Health), data = pisa)
+
+summary(mod_gam2)
+```
+
+In both models, Income and Education had a positive effect in the Overall support for science, but not Health. But some details are worth noting. First, the `edf` with value = 1 "suggest that it has been reduced to a simple linear effect". This happens given the distribution of the variable (default). 
+
+Let's plot these models:
+
+```{r}
+visreg::visreg(mod_gam2)
+visreg::visreg(mod_lm2)
+```
+
+
+Model comparisons
+
+```{r}
+aic_lm = AIC(mod_lm2)
+gcv_lm = summary(mod_lm2)$sp.criterion
+rsq_lm = summary(mod_lm2)$r.sq
+
+aic_gam1 = AIC(mod_gam2)
+gcv_gam1 = summary(mod_gam2)$sp.criterion
+rsq_gam1 = summary(mod_gam2)$r.sq
+
+(mod_comp = tibble(" " = c("LM", "GAM"), 
+                  "AIC" = c(aic_lm, aic_gam1),
+                  "GCV" = c(gcv_lm, gcv_gam1),
+                  "R2" = c(rsq_lm, rsq_gam1)
+                  ))
+```
+
+The GAM model has a much better fit to the data (R2 = 0.86), and suggest that living standards (income) and education contribute significantly to the overall support for science, but not health.
+
+**Visual representations** can be made as line graphs, but also as *2D smooths*. For example:
+
+```{r}
+visreg::visreg2d(mod_gam2, x = "Income", y = "Edu")
+visreg::visreg2d(mod_gam2, x = "Income", y = "Health")
+```
+
+"First and foremost, the figure reflects the individual plots, and we can see that middling to high on Education and high on Income generally produces the highest scores. Conversely, being low on both the Education and Income indices are associated with poor Overall science scores. However, while interesting, these respective smooths were created separately of one another, and there is another way we might examine how these two effects work together in predicting the response."
+
+Let's built a 3rd model that interacts both variables and them plot it in 3d.
+
+"So let’s take a look at another approach, continuing the focus on visual display. It may not be obvious at all, but one can utilize smooths of more than one variable, in effect, a smooth of the smooths of the variables that go into it. This is akin to an interaction in typical model settings17. Let’s create a new model to play around with this feature. After fitting the model, I provide a visualization for comparison to the previous, as well as a 3D view one can rotate to their liking."
+
+In the formula, `te` stands for: "tensor product smooth"
+
+```{r}
+mod_gam3 = gam(Overall ~ te(Income, Edu), data = pisa)
+summary(mod_gam3)
+```
+
+This models shows a significative interaction between income and education.
+
+3D plot:
+
+```{r}
+visreg::visreg2d(mod_gam3, x = "Income", y = "Edu", scale = "response")
+```
+
+"As we might suspect, wealthy countries with more of an apparent educational infrastructure are going to score higher on the Overall science score. However, wealth alone does not necessarily guarantee higher science scores (note the dark bottom right corner on the contour plot), though without at least moderate wealth hopes are fairly dim for a decent score."
+
+
+## Issues
+
+The GAM estimations are based on penalized likelihood approach. This approach usually works fine, but there other options such as backfitting, generalized smoothing splines, and Bayesian. 
+
+Some smooths will always go to a non-zero coefficients for the basis function (which is a problem, but I don't understand why). In this cases, an extra penalty can be added. 
+
+There are several smoothing functions available in the `mgcv` package. The default (thin plate regression splines, TPRS) are good for several contexts, but there are others that may work better depending on the case (e.g., ensor product smooths for multiple for covariates of different scales).
+
+There are several built-in functions to examine the diagnostics of the model, for examples and guidance, check [here](https://m-clark.github.io/generalized-additive-models/issues.html).
+
+There are ways to measure for *concurvity* that is a generalization of the *collinearity*. There are three ways to measure and deal with this issue. Check the tutorial. 
+

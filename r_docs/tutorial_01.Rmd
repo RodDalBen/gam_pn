@@ -1,0 +1,795 @@
+---
+title: "Generalized Additive Models (GAM) - Tutorial"
+output: html_notebook
+author: "Rodrigo Dal Ben"
+date: "11/08/2020"
+---
+
+Notes from this [tutorial](https://noamross.github.io/gams-in-r-course/) by Noam Ross.
+
+General tips:
+
+* the `mgcv` does not use `character` variables, always convert to `factor`;
+
+* everything under "" comes from the course (ctrl+v);s
+
+# Load packages
+```{r}
+library("mgcv")
+library("tidyverse")
+library("here")
+library("MASS") # data for exercises
+library("gamair") # data for exercises 
+library("sp") # data for exercises
+
+
+data("mpg", package = "gamair")
+data("meuse", package = "sp")
+csale <- readRDS("csale.rds") # ERROR can't go on with the tutorial
+```
+
+# Chapter 1: Introduction to GAMs
+
+"In this chapter, you will learn how Generalized additive models work and how to use flexible, nonlinear functions to model data without over-fitting. You will learn to use the `gam()` function in the `mgcv` package, and how to build multivariate models that mix nonlinear, linear, and categorical effects to data."
+
+## Linear vs. Non-linear approach
+
+"In this first exercise, you will fit a linear model to a data set and visualize the results to see how well it captures relationships in the data. The data set, stored in a data frame named mcycle, contains measurement of acceleration of a crash-test dummy head during a motorcycle crash. It contains measurements of acceleration (g) in the accel column and time (milliseconds) in the times column.
+
+```{r}
+mcycle <- MASS::mcycle
+
+# inspect
+head(mcycle)
+plot(mcycle)
+
+# fit linear model
+lm_mod <- lm(accel ~ times, data = mcycle)
+
+# visual inspection
+termplot(lm_mod, partial.resid = T, se = T)
+```
+
+Now you will fit a non-linear model to the same mcycle data using the gam() function from the mgcv package."
+
+```{r}
+# fit non-linear model
+gam_mod <- gam(accel ~ s(times), data = mcycle) # s() stands for smooth
+
+# visual inspection
+plot(gam_mod, residuals = T, pch = 1) # much better fit 
+```
+
+## Parts of non-linear function
+
+"GAMs are made up of basis functions that together compose the smooth terms in models. The coef() function extracts the coefficients of these basis functions the GAM model object."
+
+```{r}
+coef(gam_mod)
+```
+
+In this model,. we have 9 basis functions that make up the smooth.
+
+An initial challenge with `gam` is to get the right fit: close to the data (avoid under-fitting), but **not** fittingthe noise (avoid over-fitting). 
+$$Fit = Likelihood - \lambda \times Wiggliness$$
+
+$\lambda$ = smoothing parameter;
+$Wiggliness$ = number of Basis functions;
+
+### Smoothing
+
+Setting a fixed smoothing parameter `sp`:
+
+* `gam(y ~ s(x), data = dat, sp = 0.1)`: `sp` applied to all parameters;
+
+* `gam(y ~ s(x, sp = 0.1), data = dat)`: `sp` applied to the specific smooth;
+
+Smoothing via restricted maximum likelihood:
+
+* `gam(y ~ s(x), data = dat, method = "REML")`: automatically defines the smoothing based on the `REML` estimation.
+
+#### Example
+
+"The smoothing parameter balances between likelihood and wiggliness to optimize model fit. Here, you’ll examine smoothing parameters and will fit models with different fixed smoothing parameters."
+
+```{r}
+# Extract the smoothing parameter
+gam_mod <- gam(accel ~ s(times), data = mcycle, method = "REML")
+gam_mod$sp # 0.0007758036 ;'automatically defined by REML
+
+# Fix the smoothing parameter at 0.1
+gam_mod_s1 <- gam(accel ~ s(times), data = mcycle, sp = 0.1)
+
+# Fix the smoothing parameter at 0.0001
+gam_mod_s2 <- gam(accel ~ s(times), data = mcycle, sp = 0.0001)
+
+# Plot both models
+par(mfrow = c(3, 1))
+plot(gam_mod, residuals = TRUE, pch = 1) # original
+plot(gam_mod_s1, residuals = TRUE, pch = 1) # sp = 0.1
+plot(gam_mod_s2, residuals = TRUE, pch = 1) # sp = 0.0001
+```
+
+### Basis funtions
+
+Setting a fixed number of basis functions `k`:
+
+* `gam(y ~ s(x, k = 3), data = dat)`: `k` applied to the specific smooth;
+
+Or use the defaults (via `REML`):
+
+* `gam(y ~ s(x), data = dat, method = "REML")`
+
+#### Example
+
+"The number of basis functions in a smooth has a great impact on the shapes a model can take. Here, you’ll practice modifying the number of basis functions in a model and examining the results."
+
+```{r}
+# k = 3 
+gam_mod_k3 <- gam(accel ~ s(times, k = 3), data = mcycle) 
+
+# k = 20
+gam_mod_k20 <- gam(accel ~ s(times, k = 20), data = mcycle)
+
+# visualize
+par(mfrow = c(1, 2))
+plot(gam_mod_k3, residuals = TRUE, pch = 1)
+plot(gam_mod_k20, residuals = TRUE, pch = 1) # fits MUCH better!
+```
+
+### Basis functions (complexity) and smoothing together
+
+"The number of basis functions and the smoothing parameters interact to control the wiggliness of a smooth function. Here you will see how changing both together affects model behavior."
+
+```{r}
+# default sp and k by REML
+gam_mod # specified on previous chunk
+gam_mod$sp # 0.00077...
+gam_mod$coefficients # 9 basis functions
+
+# custom sp and k
+gam_mod_sk <- gam(accel ~ s(times, k = 50), data = mcycle, sp = 0.0001)
+
+# Visualize the model
+par(mfrow = c(1, 2))
+plot(gam_mod, residuals = TRUE, pch = 1)
+plot(gam_mod_sk, residuals = TRUE, pch = 1)
+```
+
+The model gets too wiggled, probably overfitting, comparing to the `REML` one.
+
+## Multivariate GAMs
+
+GAMs can deal with different types of predictors: `smooths`, `linear`, and `categorical`.
+
+* **Category-level**: For `categorical` terms, we can estimate different smooths using the `by=` argument (`model5`). When that is done, it is good to include the categorical predictor as well (`model5b`).
+
+```{r}
+# dataset 
+head(mpg)
+str(mpg)
+
+# multiple smooths
+model <- gam(hw.mpg ~ s(weight), data = mpg, method = "REML") # 1 
+model2 <- gam(hw.mpg ~ s(weight) + s(length), data = mpg, method = "REML") # 2 
+
+## visualize
+plot(model, residuals = T, pch = 1, scheme = 1)
+plot(model2, all.terms = T, pages = 1, residuals = T, pch = 1, scheme = 1)
+
+
+# linear terms
+model3 <- gam(hw.mpg ~ s(weight) + length, data = mpg, method = "REML")
+
+## visualize
+plot(model3, residuals = T, all.terms = T, pages = 1, pch = 1, scheme = 1)
+
+# categorical terms
+model4 <- gam(hw.mpg ~ s(weight) + fuel, data = mpg, method = "REML")
+model5 <- gam(hw.mpg ~ s(weight, by = fuel), data = mpg, method = "REML") # != smooths for gas and diesel
+model5b <- gam(hw.mpg ~ s(weight, by = fuel) + fuel, data = mpg, method = "REML")
+
+## visualize
+plot.gam(model4, all.terms = T, pages = 1, residuals = T, pch = 1, scheme = 1)
+plot.gam(model5, all.terms = T, pages = 1, residuals = T, pch = 1, scheme = 1)
+plot.gam(model5b, all.terms = T, pages = 1, residuals = T, pch = 1, scheme = 1)
+```
+
+More examples
+
+Smooths only
+```{r}
+mod_city <- gam(city.mpg ~ s(weight) + s(length) + s(price), 
+                data = mpg, method = "REML")
+
+plot(mod_city, pages = 1)
+```
+
+Smooths + categorical
+```{r}
+mod_city2 <- gam(city.mpg ~ 
+                   s(weight) + s(length) + s(price) + #smooths
+                   fuel + drive + style, # categorical
+                 data = mpg, method = "REML")
+
+plot(mod_city2, all.terms = TRUE, pages = 1)
+```
+
+Category-level smooths
+```{r}
+mod_city3 <- gam(city.mpg ~ 
+                   s(weight, by = drive) + 
+                   s(length, by = drive) + 
+                   s(price, by = drive), 
+                 data = mpg, method = "REML")
+
+plot(mod_city3, pages = 1)
+```
+
+
+# Chapter 2: Interpreting and Visualizing GAMs
+
+## Interpreting GAM outputs
+
+### Summaries
+```{r}
+mod_hwy <- gam(hw.mpg ~ 
+                 s(weight) + s(rpm) + s(price) + 
+                 s(comp.ratio) + s(width) + 
+                 fuel, # linear term
+               data = mpg, 
+               method = "REML")
+
+summary(mod_hwy)
+```
+
+Step-by-step:
+
+* `Family`: model assumes a gaussian or normal distribution;
+
+* `Link function`: identity mean that the model does NOT transform the predictions;
+
+* `Formula`: model formula;
+
+* `Parametric coefficients`: models that have a pre-determined form, or linear models. The linear predictors in the model: *fuel*. The intercept (diesel?) is significant, but the interaction (gas) is not;
+
+* `Smooth terms`: coefficents are **not** printed because for each smooth there are several coefficients (depending on # of basis functions). 
+
+  - `edf`: effective degress of freedom. This factor represents the *complexity* (# of basis functions?) of the smooth: 1 = straight line, 2 = quadratic curve...Higher `edfs` describe more wiggled curves! (COOL!). We can this on plots:
+  
+```{r}
+plot.gam(mod_hwy, all.terms = T, pages = 1, residuals = T, pch = 1, scheme = 1)
+```
+  
+  - `Ref.df` & `F`: *approximate* test statistics to test the overall significance of the smooth;
+  
+  - `p`: *approximate* significance value of the smooth;
+  
+* A good way of estimating a **significant** smooth term is the one that you **CAN NOT** draw a horizontal line on the 95% CI (see examples below);
+
+* Note: high `edfs` does **not** mean *significance*, or vice-versa: there can be complexity on the curve, but there might not be certainty as to the shape and direction of its' effect;
+
+Working example: Significance and linearity
+```{r}
+mod_city4 <- gam(city.mpg ~ 
+                   s(weight) + s(length) + s(price) +
+                   s(rpm) + s(width),
+                 data = mpg,
+                 method = "REML"
+                 )
+
+summary(mod_city4)
+```
+
+From the model above: `s(price)` is significant and linear and `s(length)` is non-significant and non-linear. 
+
+**SUPER IMPORTANT**
+
+* The intercept accounts for the effects of variables at their **AVERAGE** values! 
+
+
+## Visualizing GAMs
+
+The `mgcv` package has powerfull tools for plotting GAMs built-in the `plot()` command. The default behavior of `plot()` is to show partial effects of smooth terms that add up to the overall prediction.
+
+Terms of the `mgcv::plot()`: 
+
+* `select`: which partial effects to show, based on the number of the term;
+
+* `page`: the max number of pages for the plots;
+
+* `all.terms`: include all types of terms (smooth, linear, categorical);
+
+* `rug`: puts x values along th bottom of the plot;
+
+* `residuals`: partial residuals (difference between the partial effects and the data) on the plot;
+
+* `pch`: change the shape of the `residuals`;
+
+* `cex`: changes the size of the `residuals`;
+
+* `se`: 95% confidence interval;
+
+* `shade`: adds shade to the CI;
+
+* `shade.col`: change the color of the 95 CI shade;
+
+* `seWithMean`: plot the SE of a partial effect term combined with the SE of the model intercept. This will give a sense of the model overall uncertainty;
+
+* `shift = coef(model)[1]`: shift the scale so the intercept is included;
+
+Examples:
+"For our first plotting exercise, we’ll add partial residuals to the partial effect plot of a GAM so as to compare the model to the data."
+
+```{r}
+mod <- gam(accel ~ s(times), data = mcycle, method = "REML")
+
+plot(mod, residuals = T) # adding residuals
+plot(mod, residuals = T, pch = 1) # changing the shape of residuals
+```
+
+"In plotting GAMs, you sometimes want to look at just parts of a model, or all the terms in model. Here you’ll practice selecting which terms to visualize."
+
+```{r}
+mod <- gam(hw.mpg ~ s(weight) + s(rpm) + s(price) + comp.ratio, 
+           data = mpg, method = "REML")
+
+plot(mod, select = 3) # just the price effect
+plot(mod, all.terms = T, pages = 1) # all terms on a single page
+```
+
+"Confidence intervals are a very important visual indicator of model fit. Here you’ll practice changing the appearance of confidence intervals and transforming the scale of partial effects plots."
+
+```{r}
+mod <- gam(hw.mpg ~ s(weight) + s(rpm) + s(price) + comp.ratio, 
+           data = mpg, method = "REML")
+
+# weight effect with colored shading
+plot(mod, select = 1, shade = T, shade.col = "lightblue") 
+# add the intercept value and uncertainty
+plot(mod, select = 1, shift = coef(mod)[1], seWithMean = T) 
+```
+
+
+## Model checking
+
+We have to make sure that the models we are fitting are correct. The function `mgcv::gam.check` provides several tests for the model.
+
+* Console output:
+  - `Full converge`: R has found the best results for the model; It can fail to converge when there are **too** many paremeters in the model and not enough data;
+  - `Basis testing`: 
+    - statistical tests for patterns for the models' residuals, which should be random. 
+    - Each line reports the test results for one smooth: 
+      - `k`: # of basis functions;
+      - `edf`: effective degrees of freedom (a measure of the estimation complexity);
+      - `k-index`: test statistic;
+      - `p`: we want it to be **non-significant**. Significant results usually means that theres isn't enough basis functions;
+
+* **Always** re-run `gam.check` after changing the model specification;
+
+* Plots:
+  - `qqplot`: expected to be close to a straight line;
+  - `histogram`: expected to have a symmetrical bell shape;
+  - `residual vs. linear`: evenly distributed around 0;
+  - `response vs. fitted`: expect a straight line.
+
+```{r}
+gam.check(mod)
+```
+
+* Examples:
+
+"`gam.check()` helps you understand whether you have enough basis functions to model the data."
+
+```{r}
+dat <- mgcv::gamSim(1,n=200)
+
+mod <- gam(y ~ s(x0, k = 5) + s(x1, k = 5) + s(x2, k = 5) + s(x3, k = 5),
+           data = dat, method = "REML")
+
+# Run the check function
+gam.check(mod)
+```
+
+The smooth `s(x2)` do not have enough basis functions (significant on console output). 
+
+"You can use `gam.check()` to improve models by updating them based on its results."
+
+```{r}
+dat <- mgcv::gamSim(1,n=600, scale=0.6, verbose=FALSE)
+
+# Initial model
+mod <- gam(y ~ s(x0, k = 3) + s(x1, k = 3) + s(x2, k = 3) + s(x3, k = 3),
+           data = dat, method = "REML")
+
+# Check the diagnostics
+gam.check(mod)
+
+# Refit to fix issues
+mod2 <- gam(y ~ s(x0, k = 3) + 
+              s(x1, k = 3) + 
+              s(x2, k = 15) + # changing here until the check is ns
+              s(x3, k = 3),
+           data = dat, method = "REML")
+
+# Check the new model
+gam.check(mod2)
+```
+
+
+## Checking concurvity
+
+As in linear models, when covariates in model are **strongly** correlated, we face the **collinearity problem**: the *dependent variable* or *outcome* could be responding to either variable, thus it is difficult to fit the model. This result in poorly fit models with large Confidence Intervals. In general, strong covariates should not be included in the same model.
+
+In GAMs there is an additional problem, **concurvity**. That is, one variable maybe be a smooth term of another variable. If both variables are added in the model, the CIs will be big and non-reliable.
+
+The `mgcv::concurvity()` function can check if models are suffering from this problem. The function has 2 modes:
+
+1. `full = TRUE`: Overall concurvity for each smooth is estimated. It shows how much each smooth is pre-determined by all the other smooths. **Three** measures are provided: `worst`, `observed`, and `estimate`. If the value of any of these measures are high (but especially on the `worst` case scenario): **above 0.8**, the model must be incpected more closely and interpretations must be very careful (2nd mode);
+
+2. `full = FALSE`: matrices of pairwise concurvity. This show the degree to each variable is pre-determined by each other variable, rather than any other variables. This can help pin-point/identify the variables that have high concurvity. Again, the three measure will be reported. Check each to id problems.
+  
+* Examples:
+
+"Let’s take a look at concurvity in the fuel efficiency model variables."
+
+```{r}
+mod <- gam(hw.mpg ~ s(length) + s(width) + s(height) + s(weight),
+           data = mpg, method = "REML")
+
+# Check overall concurvity
+mgcv::concurvity(mod, full = T)
+```
+
+All variables show concurvity. The smooth that is *least* pre-determined by the other variables is `s(height)` (smaller estimates, altough high).
+    
+"Now, let’s look at concurvity between model variables."
+
+```{r}
+mod <- gam(hw.mpg ~ s(length) + s(width) + s(height) + s(weight),
+           data = mpg, method = "REML")
+
+# Check pairwise concurvity
+mgcv::concurvity(mod, full = F)
+```
+
+The two variables have the greatest worst-case concurvity are: `s(weight)` and `s(width)` ~ 0.895.
+
+
+# Chapter 3: Spatial GAMs and Interactions
+
+## Two-dimensional smooths and spatial data
+
+Smooths can contain more than one variable. Here we see how it works and how to interpret their interaction;
+
+**Interactions**: the outcome depend on non-independet relationships from multiple variables. 
+
+* In GAMs, the relationship outcome-variables change across the entire range of the smooth. 
+
+* The interaction estimate is a single coefficient that accounts for all effects from each smooth and their combination (single coefficient);
+
+* It is possible to separate each component (each smooth and thei interaction): see latter in the chapter;
+
+### Exercises
+
+"Fit a GAM model to the data that predicts the concentration of cadmium in the soil using an interaction of x and y coordinates. Inspect your model with the `summary()` and `coef()` functions."
+
+
+```{r}
+# load ans inspect data
+data("meuse", package = "sp")
+head(meuse)
+str(meuse)
+
+# model
+mod2d <- gam(cadmium ~ s(x, y), data = meuse, method = "REML")
+
+# inspect the model
+summary(mod2d)
+coef(mod2d) # 29 basis functions
+```
+
+The `s(x, y)` interaction requires ~ 29 basis functions (edf/Ref.df).
+
+"Now let’s add additional predictors to the model with spatial interactions.
+
+Instructions Fit another model to predict cadmium in the soil, this time including smooths for the effect of elevation (`elev`) and distance from the river (`dist`) in addition to an `x`, `y` surface."
+
+```{r}
+mod2da <- gam(cadmium ~ s(x, y) + 
+                s(elev) + s(dist), 
+              data = meuse, 
+              method = "REML")
+
+# inspect
+summary(mod2da)
+```
+
+Both the `s(x, y)` interaction, distance, and elevation impact the river polution.
+
+## Plotting and interpreting GAM interactions
+
+Visualization of 2-D interactions may help understand their complexities, directions, and effects on the model;
+
+In the `mgcv` package, the `plot` function plots both variables and their interaction in the same plot:
+
+```{r}
+plot(mod2d)
+```
+
+X-axis and y-axis are the predictors (x and y). The inside display a topographic map of the predicted values:
+
+* Countor lines: points of euqal predicted values - labeled;
+
+* Dotted lines: unceritainty in prediction, they show how the predictions would move if they were 1 sd higher or lower;
+
+Another plot options:
+
+* `scheme = 1`: 3-D visualization;
+
+* `scheme = 2`: heatmap, in which yellow colors representlarger predictions and the red colors represent smaller ones;
+
+```{r}
+plot(mod2d, scheme = 1)
+plot(mod2d, scheme = 2)
+```
+
+To customize these plots, use the `vis.gam` function. There are manu parameters, but the most important are:
+
+* `x`: model;
+
+* `view`: where you select which variables you want to visualize jointly (e.g., `c("x1", "x2")`);
+
+* `plot.type`: kind of plot to use:
+  - `"persp"`: 3-d perspective of any two variables from a model;
+    - `se`: confidence interval of the predictions;
+    - `theta`: horizontal orientation (in degrees);
+    - `phi`: vertical orientation (in degrees);
+    - `r`: zoom (not so close or so far - meaningless);
+    
+  - `"contour"`: contour or heatmap
+    - `color`: background color pallete;
+    - `contour.col`: color of lines;
+    - `nlevels`: number of contours (details and subtlies);
+
+* `too.far`: Let's you define what prediction should not be plotted because they are too far from the data. How far is too far to be plotted. This may indicate relations that are not well captured in the model and that might not yeld good predictions (prunning). Its scaled from 0 to 1 in the range of variables, which represent the proportion of extrapolation between variables (0.1 = 10% extrapolation); - **NOT SURE IF I UNDERSTAND IT**
+
+### Examples
+
+"Plotting the model surface: 
+1) Plot the interaction terms of `mod2da` as a contour plot;
+2) Run the plot() function so interaction terms are displayed as 3D surfaces;
+3) Run the plot() function so interaction terms are displayed as colored heat maps on a sigle page."
+
+```{r}
+plot(mod2da, page = 1) # contour
+plot(mod2da, scheme = 1, page = 1) # 3-D
+plot(mod2da, scheme = 2, page = 1) # Heatmap
+```
+
+"Customizing 3D plots:
+Uncertainty is easy to see in plots of univariate smooths, but more challenging to represent in 2D relationships. Here we’ll visualize uncertainty in a geospatial interaction, using the model `mod2d` from exercise 2.
+
+Use `vis.gam()` to make a 3D perspective plot of the x, y relationship in the model, using the `se` argument to make confidence interval surfaces at +/- 2 standard errors.
+
+```{r}
+vis.gam(mod2d, 
+        plot.type = "persp", # perspective plot
+        view = c("x", "y"), # variables to plot
+        se = 2) # CIs at 2 se
+```
+
+Now make another version of the same plot, rotated 135 degrees to view it from another angle."
+
+```{r}
+vis.gam(mod2d, 
+        plot.type = "persp", # perspective plot
+        view = c("x", "y"), # variables to plot
+        se = 2, # CIs at 2 se
+        theta = 135) # horixontal rotation
+```
+
+"Extrapolation in surface plots:
+
+When making predictions from the models, it is important to understand how far from the range of your data you are extrapolating. With multivariate smooths, the shape of the areas supported by data may be complex. Here you’ll make plots that compare extrapolations to support in the data.
+
+One again we’ll use `mod2d` from exercise 2.
+
+Make a contour plot of the model using `vis.gam()`, extrapolating out from the data 5%.
+
+```{r}
+vis.gam(mod2d,
+        plot.type = "contour",
+        view = c("x", "y"),
+        too.far = 0.05) + # extrapolating in 5% - cange here to see the effects
+  points(meuse) # overlay data
+```
+
+Make a contour plot of the model using `vis.gam()`, extrapolating out from the data 25%.
+Overlay the meuse data on top of your visualization as points."
+
+```{r}
+vis.gam(mod2d,
+        plot.type = "contour",
+        view = c("x", "y"),
+        too.far = 0.25) + # extrapolating in 5% - cange here to see the effects
+  points(meuse) # overlay data
+```
+
+
+## Visualizing categorical-continuous interactions
+
+Instead or in addition to smooth interactions, we can also have **categorical-continuous w/ levels detailed** and **factor-smooth** interactions:
+
+* **categorical-continuous w/levels detailed**: `by=` inside the smooth term. In this case each level of the factor will have it's own estimation; We also need to add the categorical variable as an additional variable for it to be estimated;
+
+* **factor-smooth**: the `factor-smooth` basis-type (`bs = "fs"`). Two variables (one categorical and one nonlinear) are specified in the same smooth using the `s(var1, var2, bs = "fs")` formulation. In this case we do not add an separate linear term. But we **do not** get an individual estimate for each level of the categorical variable; We get **ONE** big overall estimate; This formulation **IS NOT** good for distinguishing among categories. But they can **CONTROL** for the effect of variables that are not our main interest. Especially when there are many categories or too few data point in some categories;
+
+* `plot` of `fs` formulations will by default do 1 plot with multiple smooths in it; `vis.gam` in "persp" are usually good to compare the shape of different smooths created with `fs`.
+
+```{r}
+# previous model: smooth BY factor
+model4b <- gam(hw.mpg ~ s(weight, by = fuel) + fuel,
+               data = mpg,
+               method = "REML")
+
+summary(model4b) # each variable is estimated
+plot(model4b, all.terms = T, pages = 1, scheme = 1)
+
+# Factor-smooth formulation
+model4c <- gam(hw.mpg ~ s(weight, fuel, bs = "fs"),
+               data = mpg,
+               method = "REML")
+
+summary(model4c) # big overall summary
+plot(model4c, scheme = 1) # 1  plot, many smooths
+vis.gam(model4c, theta = 125, plot.type = "persp") # not working... 
+```
+
+### Examples
+
+"Soil pollution in different land uses:
+
+The `meuse` data set has a factor variable, `landuse`, which specifies the type of land use or cover at the location where soil was sampled.
+
+Using a `categorical-continuous` interaction (e.g., the `by =` form), fit a model to the `meuse` data that predicts `copper` levels as a function of `dist`, with different smooths for each level of `landuse`.
+Include a separate term for varying intercepts for each level of `landuse`.
+Print the model summary.
+
+```{r}
+mod_sep <- gam(copper ~ s(dist, by = landuse) + landuse,
+               data = meuse,
+               method = "REML")
+
+summary(mod_sep)
+```
+
+Interpretation: The interation between distance and some types of land use significantly affects the cooper concentration.
+
+Fit a model with a `factor-smooth` interaction between `dist` and `landuse` variables using the `bs = "fs"` formulation.
+Print the model summary."
+
+```{r}
+mod_fs <- gam(copper ~ s(dist, landuse, bs = "fs"),
+               data = meuse,
+               method = "REML")
+
+summary(mod_fs)
+```
+
+Interpretation: The overall interaction between distance and land use significantly affects the cooper concentration.
+
+"Plotting pollution in different land uses
+
+You can observe the differences between different **continuous-categorical interaction** types by visualizing them. Here, you’ll look at the different ways the `by-type` and `factor-smooth-type` interactions are plotted, an see how the approaches fit the models differently.
+
+Plot both (previous exercise) models using the `plot()` function, using the `pages` argument to keep all terms on one plot.
+
+```{r}
+plot(mod_sep, pages = 1) # one plot for each factor level
+plot(mod_fs, pages = 1) # a single plot iwth all levels
+```
+
+Plot both models making 3D perspective plots with `vis.gam()`."
+
+```{r}
+vis.gam(mod_sep, view = c("dist", "landuse"), plot.type = "persp")
+vis.gam(mod_fs, view = c("dist", "landuse"), plot.type = "persp")
+```
+
+The categorical-continuous interaction using `by` will plot each level and some levels will pop-out, the most significant ones; On the other hand, the effect of individual levels is minimized in the `fs` plot (but that serves as a good control).
+
+## Interations with different scales: Tensors smooths
+
+* `te`: `Tensor smooths` allow the modelling of variables in different scale, both in space, time, and other units (weight, height etc.). The tensor is similar to a 2-D smooth, but it has **2** smooth parameters (one for each variable of the interaction). You can also specify different number of basis functions (`k`) for each paremeter: `gam(y ~ te(x1, x2, k = c(5, 6))`;
+
+
+* `ti`: `Tensor interaction` can be used to separate interactions of individual univariate variables; With this we can model the interaction between terms and not their independent effects, which we estimate separately: `gam(y ~ s(x1) + s(x2) + ti(x1, x2))`; Each `s` and `ti` need their own basis functions, which will **require** more data to be modelled;
+
+### Examples
+
+"The `meuse` dataset contains some predictor variables that are on the same scale (`x`, `y`), and some that are on different scales (`elev`, `dist`, `om`). In a previous exercise, you fit a model where you predicted `cadmium` pollution as a function of location and elevation: `mod <- gam(cadmium ~ s(x, y) + s(elev)`.
+
+In this exercise, you’ll build a model that allows multiple variables to interact despite these different scales using a tensor smooth, `te()`.
+
+Convert `mod` to a model where `x`, `y`, and `elev` all interact in a single `te()` term, varying on their own scales.
+
+Then `summarize` the model and visualize it with `plot()`.
+
+```{r}
+tensor_mod <- gam(cadmium ~ te(x, y, elev), data = meuse, method = "REML")
+
+summary(tensor_mod) # the interaction is siginifant
+plot(tensor_mod)
+```
+
+Convert the above model such that `x` and `y` interact on the same scale, the effect `elev` is a separate smooth, and the interaction of all three on different scales is a separate term.
+
+`Summarize` and `plot` the model.
+
+```{r}
+tensor_mod2 <- gam(cadmium ~ 
+                     s(x, y) + # interaction in the same scale
+                     s(elev) + # separate smooth
+                     ti(x, y, elev), # interaction in diff scales & separate terms
+                   data = meuse, method = "REML")
+
+summary(tensor_mod2) # the interaction is siginifant
+plot(tensor_mod2, pages = 1)
+```
+
+
+# Chapter 4: Logistic GAMs for classification
+
+GAMs can model more than just continuous numeric values (e.g., speed, efficiency, level of var etc.). For example, it can model logistic processes (e.g., presence or absence of a var, true or false, yes or no etc.).
+
+When we model binary outcomes, our outcome is a probability between 0 and 1. Because GAM can have any number, we can convert the output using the logistic function. This function will take any number and transform it into proportions between 0 and 1 OR  log-odds: hte log of the ratio between positive outcomes to negative outcomes. The inverse of the logistic function is the logit function. This function will translate probability between 0 and 1 to log-odds that can have any value.
+
+* `qlogis()`: logistic function;
+
+* `qlogis()`: logit function;
+
+These are inverses of each other.
+
+```{r}
+qlogis(plogis(0.5)) # the logistic of a logit return the original value (0.5)
+
+qlogis(0.25) == log(1/3) # 0.25 probability is similar to the log-odds of positive 1 and negative 3 (1/3)
+```
+
+* add `family = binomial` to GAM, this tells the model that the outcome of the model are 1s and 0s and the model should be fit in a logistic scale;
+
+* output: similar to previous gams, but outputs are on the log-odds scale. To convert to odds, we can use the `plogis()` function;
+
+* the `plogis()` of the intercept represent the baseline probability of a positive outcome when the variables are at their **AVERAGE** values.
+
+### Examples
+
+"Let’s fit some GAMs to the `csale` data, which has the binary purchase outcome variable.
+
+After you fit the model, answer the following question:
+
+What does the `log_mod` model estimate the probability of a person making a purchase who has mean values of all variables?
+
+Fit a logistic GAM predicting whether a `purchase` will be made based only on a smooth of the `mortgage_age` variable.
+
+**ABORT TUTORIAL** 
+**obs.** The required data is not available (see first code chunk). Since This is not crucial for my purposes, I stopped here.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
